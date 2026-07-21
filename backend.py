@@ -353,6 +353,6 @@ def ultimas_actividades(df, n=10):
                 "Ritmo (min/km)", "Velocidad (km/h)", "Carga"]
     tabla = tabla[columnas].round(1)                                               # Redondea para evitar decimales largos
     tabla["Ritmo (min/km)"] = tabla["Ritmo (min/km)"].apply(formatear_ritmo)       # Convierte el ritmo a min:seg
-    return tabla.rename(columns={"Distancia_km": "Km", "Minutos": "Min",           # Nombres cortos para la tabla
+    return tabla.rename(columns={"Distancia_km": "Km", "Minutos": "Duración Minutos",           # Nombres cortos para la tabla
                                  "Ritmo (min/km)": "Ritmo (min:s/km)",
-                                 "Velocidad (km/h)": "Vel (km/h)"})
+                                 "Velocidad (km/h)": "Velocidad (km/h)"})

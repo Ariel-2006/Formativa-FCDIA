@@ -367,7 +367,18 @@ with tab_pred:                                                                  
 
         fig_prog = px.line(historico, x="Inicio", y="mejor_ritmo", markers=True,    # Evolución del mejor esfuerzo
                            labels={"mejor_ritmo": "Mejor ritmo (min/km)", "Inicio": "Inicio del bloque"})
-        fig_prog.update_traces(hovertemplate="Bloque iniciado el %{x|%d/%m/%Y}<br>Mejor ritmo: %{y:.2f} min/km<extra></extra>")
+        
+        historico["Ritmo texto"] = historico["mejor_ritmo"].apply(backend.formatear_ritmo)  # Ritmo en formato min:seg
+        fig_prog.update_traces(customdata=historico[["Ritmo texto"]],               # Adjunta el ritmo ya formateado
+                               hovertemplate="Bloque iniciado el %{x|%d/%m/%Y}<br>"
+                                             "Mejor ritmo: %{customdata[0]} min/km<extra></extra>")
+
+        minimo = int(np.floor(historico["mejor_ritmo"].min()))                      # Minuto entero inferior de la serie
+        maximo = int(np.ceil(historico["mejor_ritmo"].max()))                       # Minuto entero superior de la serie
+        marcas = list(range(minimo, maximo + 1))                                    # Escala de minutos enteros: 5, 6, 7, 8
+
+        fig_prog.update_yaxes(autorange="reversed", tickmode="array",               # Fuerza el uso de las marcas indicadas
+                              tickvals=marcas, ticktext=[str(m) for m in marcas])   # Etiquetas sin decimales
         
         minimo = int(np.floor(historico["mejor_ritmo"].min()))                      # Minuto entero inferior de la serie
         maximo = int(np.ceil(historico["mejor_ritmo"].max()))                       # Minuto entero superior de la serie
