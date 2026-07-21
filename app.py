@@ -121,15 +121,21 @@ if datos.empty:                                                                 
     st.warning("No hay actividades con esos filtros. Prueba otra combinación.")     # Avisa al usuario
     st.stop()                                                                       # Detiene el renderizado
 
-# El diagnóstico de fatiga SIEMPRE se calcula sobre el histórico completo del deporte:
-# usar los datos filtrados por año daría el estado de un periodo pasado, no el actual.
-base_diagnostico = datos_completos                                                  # Punto de partida del diagnóstico
-if deporte != "Todo":                                                               # Respeta únicamente el filtro de deporte
-    base_diagnostico = base_diagnostico[base_diagnostico["Tipo de actividad"] == deporte]
+# El diagnóstico de fatiga se calcula SIEMPRE sobre el histórico completo y con TODOS
+# los deportes. El organismo acumula una única fatiga: separar la carga por disciplina
+# produciría diagnósticos contradictorios (riesgo en bicicleta y óptimo en carrera a la
+# vez) porque cada cálculo ignoraría la carga aportada por el otro deporte.
+diagnostico = backend.estado_actual(datos_completos)                                # Estado de fatiga global vigente hoy
 
-diagnostico = backend.estado_actual(base_diagnostico)                               # Estado de fatiga vigente hoy
+# Los días de inactividad sí se miden por deporte: informan de cuándo se practicó
+# por última vez la disciplina seleccionada, sin alterar el diagnóstico de carga.
+base_deporte = datos_completos                                                      # Punto de partida por disciplina
+if deporte != "Todo":                                                               # Aplica únicamente el filtro de deporte
+    base_deporte = base_deporte[base_deporte["Tipo de actividad"] == deporte]
+
+dias_deporte = backend.dias_sin_entrenar(base_deporte)                              # Inactividad en la disciplina elegida
 kpis = backend.calcular_kpis(datos)                                                 # Indicadores del periodo seleccionado
-kpis_hoy = backend.calcular_kpis(base_diagnostico)                                  # Indicadores vigentes para el agente
+kpis_hoy = backend.calcular_kpis(base_deporte)                                      # Indicadores vigentes para el agente
 
 
 # ---------------------------------------------------------
@@ -143,32 +149,57 @@ tab_panel, tab_carga, tab_pred, tab_hist = st.tabs(                             
 with tab_panel:                                                                     # Resumen numérico del estado actual
     st.subheader(f"Estado actual — {deporte}")                                      # Título contextualizado al deporte
 
+    etiqueta_dias = "Días sin entrenar" if deporte == "Todo" else f"Días sin {deporte.lower()}"  # Contextualiza la métrica
+
     c1, c2, c3, c4 = st.columns(4)                                                  # Cuatro tarjetas de indicadores
     c1.metric("Km últimos 7 días", f"{kpis_hoy.get('km_7d', 0):.1f}")               # Volumen de la última semana
     c2.metric("Km últimos 28 días", f"{kpis_hoy.get('km_28d', 0):.1f}")             # Volumen del último mesociclo
-    c3.metric("Días sin entrenar", f"{diagnostico.get('dias_inactivo', 0)}")        # Inactividad desde la última sesión
+    c3.metric(etiqueta_dias, f"{dias_deporte if dias_deporte is not None else '—'}")  # Inactividad en la disciplina
 
     acwr = diagnostico.get("acwr")                                                  # Ratio de fatiga vigente
-    c4.metric("Ratio de fatiga (ACWR)", f"{acwr:.2f}" if pd.notna(acwr) else "—")   # Componente de análisis principal
+    c4.metric("Ratio de fatiga (ACWR)", f"{acwr:.2f}" if pd.notna(acwr) else "—",   # Componente de análisis principal
+              help="Se calcula con todos los deportes juntos: la fatiga que acumula el cuerpo es una sola.")
 
     if pd.isna(acwr):                                                               # Si no se pudo calcular el ratio
         st.info("No hay carga suficiente en los últimos 28 días para calcular el ACWR.")  # Explica la ausencia
-    elif acwr > 1.5:                                                                # Zona de sobrecarga
+    elif acwr > backend.UMBRAL_RIESGO:                                              # Zona de sobrecarga
         st.error(f"**{diagnostico['estado']}** — la carga reciente supera tu base. Reduce intensidad y prioriza recuperación.")
-    elif acwr < 0.8:                                                                # Zona de carga insuficiente
+    elif acwr > backend.UMBRAL_OPTIMO_ALTO:                                         # Franja intermedia de vigilancia
+        st.warning(f"**{diagnostico['estado']}** — vas camino de la zona de riesgo. No subas más el volumen esta semana.")
+    elif acwr < backend.UMBRAL_OPTIMO_BAJO:                                         # Zona de carga insuficiente
         st.warning(f"**{diagnostico['estado']}** — puedes subir el volumen de forma gradual (máximo 10 % por semana).")
     else:                                                                           # Franja de progresión segura
         st.success(f"**{diagnostico['estado']}** — la carga está equilibrada. Mantén la progresión actual.")
 
+    st.caption("El diagnóstico de carga considera todos los deportes en conjunto y no cambia al filtrar por disciplina.")
+
     st.divider()                                                                    # Separador de secciones
     st.subheader(f"Resumen del periodo — {año}")                                    # Indicadores del periodo filtrado
 
-    d1, d2, d3, d4 = st.columns(4)                                                  # Cuatro indicadores del periodo
+    # La marca de referencia se expresa en la unidad propia de cada disciplina: ritmo
+    # (min/km) en carrera y velocidad media (km/h) en ciclismo. Con el filtro en "Todo"
+    # se muestran ambas, ya que el ritmo por kilómetro de la bicicleta siempre sería el
+    # mejor del conjunto y ocultaría la marca real de carrera.
+    mejor_carrera = kpis.get("mejor_ritmo_carrera")                                 # Mejor ritmo corriendo del periodo
+    mejor_bici = kpis.get("mejor_velocidad_bici")                                   # Mejor velocidad pedaleando
+
+    if deporte == "Todo":                                                           # Ambas disciplinas a la vista
+        d1, d2, d3, d4, d5 = st.columns(5)                                          # Cinco indicadores del periodo
+        d3.metric("Mejor ritmo (carrera)",                                          # Marca de referencia corriendo
+                  f"{backend.formatear_ritmo(mejor_carrera)} min/km")
+        d4.metric("Mejor velocidad (bici)",                                         # Marca de referencia en bicicleta
+                  f"{mejor_bici:.1f} km/h" if pd.notna(mejor_bici) else "—")
+        col_fc = d5                                                                 # La cobertura ocupa la última columna
+    else:                                                                           # Una sola disciplina seleccionada
+        d1, d2, d3, col_fc = st.columns(4)                                          # Cuatro indicadores del periodo
+        if deporte == "Bicicleta":                                                  # En ciclismo interesa la velocidad
+            d3.metric("Mejor velocidad", f"{mejor_bici:.1f} km/h" if pd.notna(mejor_bici) else "—")
+        else:                                                                       # En carrera interesa el ritmo
+            d3.metric("Mejor ritmo", f"{backend.formatear_ritmo(mejor_carrera)} min/km")
+
     d1.metric("Actividades", f"{kpis.get('actividades', 0)}")                       # Número de sesiones registradas
     d2.metric("Distancia total", f"{kpis.get('km_total', 0):.1f} km")               # Volumen acumulado del periodo
-    mejor = kpis.get("mejor_ritmo")                                                 # Mejor ritmo alcanzado
-    d3.metric("Mejor ritmo", f"{mejor:.1f} min/km" if pd.notna(mejor) else "—")     # Marca de referencia del periodo
-    d4.metric("Cobertura de pulsómetro", f"{kpis.get('cobertura_fc', 0):.0f} %")    # Calidad real de los datos de FC
+    col_fc.metric("Cobertura de pulsómetro", f"{kpis.get('cobertura_fc', 0):.0f} %")  # Calidad real de los datos de FC
 
     if kpis.get("cobertura_fc", 100) < 70:                                          # Advierte si faltan muchos datos de FC
         st.caption("ℹ️ Parte del histórico no tiene frecuencia cardíaca. La carga de esas sesiones se estima "
@@ -191,34 +222,53 @@ with tab_carga:                                                                 
     st.caption("La carga aguda (7 días) refleja la fatiga reciente; la crónica (28 días), la condición acumulada. "
                "El cociente entre ambas es el ACWR.")                               # Explicación del indicador
 
-    serie = backend.serie_carga_diaria(base_diagnostico)                            # Serie diaria continua de carga
+    serie = backend.serie_carga_diaria(datos_completos)                             # Serie diaria de carga (todos los deportes)
 
     if serie.empty:                                                                 # Sin serie no hay nada que mostrar
         st.info("No hay datos suficientes para construir la serie de carga.")       # Mensaje informativo
     else:
-        fig_eq = go.Figure()                                                        # Gráfico comparativo de ambas cargas
-        fig_eq.add_trace(go.Scatter(x=serie["Fecha"], y=serie["Carga Cronica"],     # Trazo de la condición física
-                                    name="Condición (28 días)", line=dict(color="#2E86DE", width=2)))
-        fig_eq.add_trace(go.Scatter(x=serie["Fecha"], y=serie["Carga Aguda"],       # Trazo de la fatiga reciente
-                                    name="Fatiga (7 días)", line=dict(color="#EE5A24", width=2)))
-        fig_eq.update_layout(height=330, hovermode="x unified", margin=dict(t=10),  # Ajustes de presentación
-                             yaxis_title="Carga media diaria", xaxis_title="",
-                             yaxis_tickformat=".1f", legend_title_text="")
-        st.plotly_chart(fig_eq, width="stretch")                                    # Renderiza el gráfico de equilibrio
+        # La serie se calcula siempre sobre el histórico completo (las medias móviles de
+        # 28 días necesitan los días previos), pero se recorta al periodo seleccionado.
+        vista = serie                                                               # Serie completa por defecto
+        if año != "Todo el histórico":                                              # Si se ha acotado el periodo
+            vista = serie[serie["Fecha"].dt.year == int(año)]                       # Recorta al año seleccionado
 
-        st.subheader("Evolución del ACWR")                                          # Gráfico del ratio agudo:crónico
-        reciente = serie.tail(365)                                                  # Último año para mantener la legibilidad
+        if vista.empty:                                                             # Si el año no contiene carga
+            st.info("No hay carga registrada en el periodo seleccionado.")          # Mensaje informativo
+        else:
+            fig_eq = go.Figure()                                                    # Gráfico comparativo de ambas cargas
+            fig_eq.add_trace(go.Scatter(                                            # Trazo de la condición física
+                x=vista["Fecha"], y=vista["Carga Cronica"], name="Condición",
+                line=dict(color="#2E86DE", width=2, shape="spline", smoothing=1.3),  # Línea suavizada
+                hovertemplate="Condición: %{y:.1f}<extra></extra>"))                # Etiqueta breve para el recuadro
+            fig_eq.add_trace(go.Scatter(                                            # Trazo de la fatiga reciente
+                x=vista["Fecha"], y=vista["Carga Aguda"], name="Fatiga",
+                line=dict(color="#EE5A24", width=2, shape="spline", smoothing=1.3),  # Línea suavizada
+                hovertemplate="Fatiga: %{y:.1f}<extra></extra>"))                   # Etiqueta breve para el recuadro
+            fig_eq.update_layout(height=330, hovermode="x unified", margin=dict(t=10),  # Ajustes de presentación
+                                 yaxis_title="Carga media diaria", xaxis_title="",
+                                 yaxis_tickformat=".1f", legend_title_text="")
+            st.plotly_chart(fig_eq, width="stretch")                                # Renderiza el gráfico de equilibrio
+            st.caption("Fatiga = carga media de los últimos 7 días. Condición = carga media de los últimos 28 días. "
+                       "Cuando la naranja supera a la azul, estás acumulando más fatiga de la que tu base soporta.")
 
-        fig_acwr = go.Figure()                                                      # Gráfico del ratio con banda óptima
-        fig_acwr.add_hrect(y0=0.8, y1=1.5, fillcolor="#2ECC71", opacity=0.12,       # Banda verde de progresión segura
-                           line_width=0, annotation_text="Zona óptima", annotation_position="top left")
-        fig_acwr.add_trace(go.Scatter(x=reciente["Fecha"], y=reciente["ACWR"],      # Trazo del ratio a lo largo del tiempo
-                                      name="ACWR", line=dict(color="#333", width=2)))
-        fig_acwr.add_hline(y=1.5, line_dash="dash", line_color="#E74C3C")           # Umbral de riesgo de lesión
-        fig_acwr.add_hline(y=0.8, line_dash="dash", line_color="#F39C12")           # Umbral de carga insuficiente
-        fig_acwr.update_layout(height=330, margin=dict(t=10), yaxis_title="ACWR",   # Ajustes de presentación
-                               xaxis_title="", yaxis_tickformat=".1f", yaxis_range=[0, 2.5])
-        st.plotly_chart(fig_acwr, width="stretch")                                  # Renderiza el gráfico del ACWR
+            st.subheader("Evolución del ACWR")                                      # Gráfico del ratio agudo:crónico
+
+            fig_acwr = go.Figure()                                                  # Gráfico del ratio con bandas
+            fig_acwr.add_hrect(y0=backend.UMBRAL_OPTIMO_BAJO, y1=backend.UMBRAL_OPTIMO_ALTO,  # Banda verde recomendada
+                               fillcolor="#2ECC71", opacity=0.12, line_width=0,
+                               annotation_text="Zona óptima", annotation_position="top left")
+            fig_acwr.add_hrect(y0=backend.UMBRAL_OPTIMO_ALTO, y1=backend.UMBRAL_RIESGO,  # Banda ámbar de vigilancia
+                               fillcolor="#F39C12", opacity=0.10, line_width=0)
+            fig_acwr.add_trace(go.Scatter(                                          # Trazo del ratio a lo largo del tiempo
+                x=vista["Fecha"], y=vista["ACWR"], name="ACWR",
+                line=dict(color="#333", width=2, shape="spline", smoothing=1.3),    # Línea suavizada
+                hovertemplate="ACWR: %{y:.2f}<extra></extra>"))                     # Etiqueta breve para el recuadro
+            fig_acwr.add_hline(y=backend.UMBRAL_RIESGO, line_dash="dash", line_color="#E74C3C")  # Umbral de riesgo
+            fig_acwr.add_hline(y=backend.UMBRAL_OPTIMO_BAJO, line_dash="dash", line_color="#F39C12")  # Umbral inferior
+            fig_acwr.update_layout(height=330, margin=dict(t=10), yaxis_title="ACWR",  # Ajustes de presentación
+                                   xaxis_title="", yaxis_tickformat=".1f", yaxis_range=[0, 2.5])
+            st.plotly_chart(fig_acwr, width="stretch")                              # Renderiza el gráfico del ACWR
 
 # ============ PESTAÑA 3: PREDICCIÓN Y PLAN ============
 with tab_pred:                                                                      # Componente predictivo del sistema
@@ -260,7 +310,8 @@ with tab_pred:                                                                  
             with col_res:                                                           # Presentación del resultado predictivo
                 r1, r2 = st.columns(2)                                              # Dos indicadores de la predicción
                 r1.metric(f"Tiempo estimado en {distancia:g} km", tiempo_texto)     # Marca proyectada por el modelo
-                r2.metric("Ritmo de competición", f"{ritmo:.2f} min/km")            # Ritmo objetivo por kilómetro
+                r2.metric("Ritmo de competición",                                   # Ritmo objetivo por kilómetro
+                          f"{backend.formatear_ritmo(ritmo)} min/km")
 
             if modelo.fuera_de_rango_calibrado(distancia):                          # Advierte de la extrapolación
                 st.warning(f"⚠️ El modelo está calibrado con esfuerzos de {modelo.RANGO_CALIBRADO[0]} a "
@@ -304,13 +355,21 @@ with tab_pred:                                                                  
         st.subheader("Progresión: mejor ritmo por mesociclo")                       # Serie histórica del rendimiento
 
         historico = entrenamiento["datos"].reset_index().rename(columns={"index": "Mesociclo"})  # Dataset de entrenamiento
-        fig_prog = px.line(historico, x="Mesociclo", y="mejor_ritmo", markers=True,  # Evolución del mejor esfuerzo
-                           labels={"mejor_ritmo": "Mejor ritmo (min/km)", "Mesociclo": "Bloque de 28 días"})
+
+        # El número de bloque no es interpretable por sí solo: se traduce a la fecha real
+        # de inicio del mesociclo, contada desde la primera actividad del histórico.
+        origen = datos_completos["Fecha"].min().normalize()                         # Fecha de la primera actividad
+        historico["Inicio"] = origen + pd.to_timedelta(historico["Mesociclo"] * 28, unit="D")  # Inicio de cada bloque
+
+        fig_prog = px.line(historico, x="Inicio", y="mejor_ritmo", markers=True,    # Evolución del mejor esfuerzo
+                           labels={"mejor_ritmo": "Mejor ritmo (min/km)", "Inicio": "Inicio del bloque"})
+        fig_prog.update_traces(hovertemplate="Bloque iniciado el %{x|%d/%m/%Y}<br>Mejor ritmo: %{y:.2f} min/km<extra></extra>")
         fig_prog.update_yaxes(autorange="reversed", tickformat=".1f")               # Invierte el eje: más abajo es más rápido
         fig_prog.update_layout(height=330, margin=dict(t=10))                       # Ajustes de presentación
         st.plotly_chart(fig_prog, width="stretch")                                  # Renderiza la curva de progresión
-        st.caption("El eje está invertido: cuanto más abajo, más rápido. Cada punto es el mejor esfuerzo "
-                   "de un bloque de 4 semanas.")
+        st.caption(f"Cada punto es un bloque de 28 días, contados desde la primera actividad "
+                   f"({origen.strftime('%d/%m/%Y')}). Solo aparecen los bloques con al menos una carrera de 5 km o más. "
+                   "El eje está invertido: cuanto más abajo el ritmo, más rápido.")
 
 # ============ PESTAÑA 4: HISTÓRICO ============
 with tab_hist:                                                                      # Consulta del historial de actividades
@@ -321,14 +380,25 @@ with tab_hist:                                                                  
         st.dataframe(resumen, width="stretch", hide_index=True)                     # Tabla resumen sin índice
 
     st.divider()                                                                    # Separador de secciones
-    st.subheader(f"Distribución de distancias — {deporte}")                         # Histograma del deporte seleccionado
+    st.subheader(f"Distribución de distancias — {deporte} ({año})")                 # Histograma del deporte y periodo
 
     fig_hist = px.histogram(datos, x="Distancia_km", nbins=25,                      # Histograma del periodo filtrado
                             labels={"Distancia_km": "Distancia (km)"},
                             color_discrete_sequence=["#EE5A24"])
-    fig_hist.update_layout(height=300, margin=dict(t=10), yaxis_title="Actividades",  # Ajustes de presentación
+    historico["Ritmo texto"] = historico["mejor_ritmo"].apply(backend.formatear_ritmo)  # Ritmo en formato min:seg
+    fig_prog.update_traces(customdata=historico[["Ritmo texto"]],               # Adjunta el ritmo ya formateado
+                               hovertemplate="Bloque iniciado el %{x|%d/%m/%Y}<br>"
+                                             "Mejor ritmo: %{customdata[0]} min/km<extra></extra>")
+
+    marcas = sorted(historico["mejor_ritmo"].unique())[::3]                     # Selecciona algunas marcas del eje
+    
+    fig_prog.update_yaxes(autorange="reversed", tickvals=marcas,                # Invierte el eje: más abajo es más rápido
+                              ticktext=[backend.formatear_ritmo(v) for v in marcas])  # Etiquetas del eje en min:seg
+    fig_hist.update_layout(height=300, margin=dict(t=10), yaxis_title="No. actividades",  # Ajustes de presentación
                            xaxis_tickformat=".1f", bargap=0.05)
     st.plotly_chart(fig_hist, width="stretch")                                      # Renderiza el histograma
+    st.caption(f"Distancias de tus {len(datos)} actividades de {deporte.lower()} en el periodo seleccionado. "
+               "Sirve para ver a qué distancias entrenas habitualmente.")
 
     st.divider()                                                                    # Separador de secciones
     st.subheader("Últimas actividades")                                             # Detalle de las sesiones recientes
@@ -382,7 +452,8 @@ if prompt := st.chat_input("Ej: ¿Qué entreno mañana? ¿Voy bien para bajar de
                 }
 
             contexto = agente.construir_contexto(                                   # Ensambla el prompt de sistema
-                kpis_hoy, diagnostico, prediccion_ctx, entrenamiento_ctx, agente.cargar_diario()
+                kpis_hoy, diagnostico, prediccion_ctx, entrenamiento_ctx, agente.cargar_diario(),
+                actividades_recientes=backend.ultimas_actividades(datos_completos, 5),  # Detalle de las 5 últimas sesiones
             )
 
             with st.chat_message("assistant"):                                      # Abre el globo del asistente

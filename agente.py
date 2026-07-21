@@ -13,6 +13,7 @@ Gestiona la capa conversacional del sistema:
 import os                                                                          # Acceso a variables de entorno y ficheros
 import json                                                                        # Serialización del historial y del diario
 from datetime import date                                                          # Registro de la fecha del diario
+import pandas as pd                                                                # Comprobación de valores nulos (Ritmo)
 
 RUTA_HISTORIAL = "historial_chat.json"                                             # Fichero de memoria conversacional
 RUTA_DIARIO = "diario_estado.json"                                                 # Fichero del diario de estado físico
@@ -90,13 +91,13 @@ def registrar_estado(estado, nota=""):
 # ---------------------------------------------------------
 # CONSTRUCCIÓN DEL CONTEXTO DEL SISTEMA
 # ---------------------------------------------------------
-def construir_contexto(kpis, diagnostico, prediccion, entrenamiento, diario):
+def construir_contexto(kpis, diagnostico, prediccion, entrenamiento, diario, actividades_recientes=None):
     """
     Ensambla el prompt de sistema con la salida real de los módulos analíticos.
 
-    El agente recibe los indicadores, el resultado del componente predictivo y su
-    fiabilidad declarada, de modo que sus recomendaciones se apoyen en los datos
-    del sistema y no en suposiciones.
+    El agente recibe los indicadores, el resultado del componente predictivo, su
+    fiabilidad declarada y el detalle de las últimas actividades individuales, de
+    modo que pueda responder sobre una sesión concreta y no solo sobre agregados.
     """
     lineas = [                                                                     # Bloque de rol e instrucciones
         "Eres un entrenador deportivo profesional que asesora a un atleta amateur.",
@@ -123,6 +124,37 @@ def construir_contexto(kpis, diagnostico, prediccion, entrenamiento, diario):
         f"- Horas entrenadas en 28 días: {kpis.get('horas_28d', 0):.1f} h.",
         f"- Cobertura de pulsómetro en el histórico: {kpis.get('cobertura_fc', 0):.0f} %.",
     ]
+
+    if actividades_recientes is not None and not actividades_recientes.empty:      # Detalle de sesiones individuales
+        lineas.append("")                                                          # Separador visual
+        lineas.append("=== ÚLTIMAS ACTIVIDADES REGISTRADAS (detalle por sesión) ===")
+
+        def _valor(fila, *nombres, defecto=None):
+            """Devuelve el primer campo existente, tolerando los distintos alias de columna."""
+            for nombre in nombres:                                                 # Recorre los nombres admitidos
+                if nombre in fila.index and pd.notna(fila[nombre]):                # Comprueba presencia y validez
+                    return fila[nombre]                                            # Devuelve el primer valor útil
+            return defecto                                                         # Ningún alias disponible
+
+        for _, fila in actividades_recientes.iterrows():                           # Recorre cada actividad reciente
+            km = _valor(fila, "Km", "Distancia_km", defecto=0)                     # Distancia de la sesión
+            minutos = _valor(fila, "Min", "Minutos", defecto=0)                    # Duración de la sesión
+            carga = _valor(fila, "Carga", defecto=0)                               # Carga calculada de la sesión
+            fecha = _valor(fila, "Fecha", defecto="fecha desconocida")             # Fecha de la actividad
+            tipo = _valor(fila, "Tipo de actividad", defecto="Actividad")          # Deporte practicado
+
+            ritmo = _valor(fila, "Ritmo (min:s/km)", "Ritmo (min/km)")             # Ritmo en cualquiera de sus formatos
+            if isinstance(ritmo, (int, float)):                                    # Si llega como número decimal
+                ritmo = f"{int(ritmo)}:{int(round((ritmo % 1) * 60)):02d}"          # Lo pasa a formato min:seg
+            ritmo_txt = f", ritmo {ritmo} min/km" if ritmo not in (None, "—") else ""  # Solo si hay dato válido
+
+            velocidad = _valor(fila, "Vel (km/h)", "Velocidad (km/h)")             # Velocidad media si corresponde
+            vel_txt = f", velocidad {velocidad:.1f} km/h" if velocidad is not None else ""  # Solo en ciclismo
+
+            lineas.append(f"- {fecha}: {tipo}, {km:.1f} km en {minutos:.0f} min"   # Una línea legible por actividad
+                          f"{ritmo_txt}{vel_txt}, carga {carga:.0f}.")
+        lineas.append("Si el atleta pregunta por 'mi última salida' o describe una sesión concreta, "
+                      "identifícala en esta lista antes de decir que no tienes el dato.")
 
     lineas.append("")                                                              # Separador del bloque predictivo
     lineas.append("=== COMPONENTE PREDICTIVO (regresión por mesociclos) ===")

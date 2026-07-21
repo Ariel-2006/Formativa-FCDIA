@@ -31,6 +31,11 @@ MESES_ES_EN = {                                                                 
 
 DIAS_MESOCICLO = 28                                                                # Bloque de carga de 4 semanas
 
+# Umbrales de referencia del ratio agudo:crónico (Gabbett, 2016)
+UMBRAL_OPTIMO_BAJO = 0.8                                                           # Por debajo hay desentrenamiento
+UMBRAL_OPTIMO_ALTO = 1.3                                                           # Límite superior de la zona óptima
+UMBRAL_RIESGO = 1.5                                                                # Por encima, alto riesgo de lesión
+
 
 # ---------------------------------------------------------
 # LIMPIEZA Y NORMALIZACIÓN
@@ -218,14 +223,48 @@ def estado_actual(df, hoy=None):
 
     acwr = float(serie["ACWR"].iloc[-1])                                           # Último valor del ratio agudo:crónico
 
-    if acwr > 1.5:                                                                 # Umbral superior de sobrecarga
+    if acwr > UMBRAL_RIESGO:                                                       # Sobrecarga aguda respecto a la base
         estado = "ALTO RIESGO DE LESIÓN"                                           # Zona roja de la literatura (Gabbett)
-    elif acwr < 0.8:                                                               # Umbral inferior de estímulo
+    elif acwr > UMBRAL_OPTIMO_ALTO:                                                # Franja intermedia de vigilancia
+        estado = "PRECAUCIÓN (carga en ascenso)"                                   # Aviso previo a la zona de riesgo
+    elif acwr < UMBRAL_OPTIMO_BAJO:                                                # Estímulo por debajo de lo necesario
         estado = "CARGA BAJA (desentrenamiento)"                                   # Pérdida progresiva de condición
-    else:                                                                          # Franja recomendada 0.8 - 1.5
+    else:                                                                          # Franja recomendada 0.8 - 1.3
         estado = "ESTADO ÓPTIMO"                                                   # Zona segura de progresión
 
     return {"acwr": acwr, "estado": estado, "dias_inactivo": dias_inactivo}        # Devuelve el diagnóstico completo
+
+
+def dias_sin_entrenar(df, hoy=None):
+    """Días transcurridos desde la última actividad del subconjunto recibido."""
+    if df.empty:                                                                   # Sin actividades no hay referencia
+        return None                                                                # Señaliza la ausencia de datos
+
+    hoy = pd.Timestamp(hoy).normalize() if hoy is not None else pd.Timestamp.today().normalize()  # Fecha de referencia
+    return (hoy - df["Fecha"].max().normalize()).days                              # Diferencia en días naturales
+
+def formatear_ritmo(ritmo_min_km):
+    """
+    Convierte un ritmo decimal a formato de cronómetro (min:seg por kilómetro).
+
+    Es necesario porque la parte decimal de un ritmo son centésimas de minuto y no
+    segundos: 4.9 min/km no equivale a 4 min 90 s, sino a 4 min 54 s.
+    """
+    if pd.isna(ritmo_min_km):                                                      # Protege contra valores no disponibles
+        return "—"                                                                 # Devuelve un guion como marcador
+
+    total_segundos = int(round(ritmo_min_km * 60))                                 # Pasa el ritmo completo a segundos
+    minutos, segundos = divmod(total_segundos, 60)                                 # Separa minutos enteros y segundos
+    return f"{minutos}:{segundos:02d}"                                             # Devuelve el formato 4:54
+
+def formatear_horas(horas_decimales):
+    """Convierte un total de horas decimales a la forma '1466 h 30 min'."""
+    if pd.isna(horas_decimales):                                                   # Protege contra valores no disponibles
+        return "—"                                                                 # Devuelve un guion como marcador
+
+    total_minutos = int(round(horas_decimales * 60))                               # Pasa el total a minutos enteros
+    horas, minutos = divmod(total_minutos, 60)                                     # Separa horas completas y resto
+    return f"{horas} h {minutos:02d} min"                                          # Devuelve el texto ya formateado
 
 
 def calcular_kpis(df, hoy=None):
@@ -250,6 +289,14 @@ def calcular_kpis(df, hoy=None):
     kpis["mejor_ritmo"] = ritmos.min() if not ritmos.empty else np.nan             # Mejor ritmo del periodo analizado
     kpis["ritmo_medio"] = ritmos.mean() if not ritmos.empty else np.nan            # Ritmo medio del periodo analizado
 
+    # Marcas separadas por deporte: el ciclismo domina el histórico y su ritmo por
+    # kilómetro siempre sería el mejor, ocultando la marca real de carrera.
+    solo_carrera = df[df["Tipo de actividad"] == "Carrera"]["Ritmo (min/km)"].dropna()  # Ritmos de carrera a pie
+    kpis["mejor_ritmo_carrera"] = solo_carrera.min() if not solo_carrera.empty else np.nan  # Mejor marca corriendo
+
+    solo_bici = df[df["Tipo de actividad"] == "Bicicleta"]["Velocidad (km/h)"].dropna()  # Velocidades en bicicleta
+    kpis["mejor_velocidad_bici"] = solo_bici.max() if not solo_bici.empty else np.nan  # Mejor velocidad pedaleando
+
     return kpis                                                                    # Devuelve el diccionario de indicadores
 
 
@@ -273,10 +320,14 @@ def resumen_por_tipo(df):
     resumen = df.groupby("Tipo de actividad").agg(                                 # Agrupa por deporte practicado
         Actividades=("Fecha", "count"),                                            # Número de sesiones
         Kilometros=("Distancia_km", "sum"),                                        # Volumen total acumulado
-        Horas=("Minutos", lambda x: x.sum() / 60),                                 # Tiempo total en horas
+        Horas=("Minutos", lambda x: x.sum() / 60),                                 # Tiempo total en horas decimales
     ).reset_index().sort_values("Actividades", ascending=False)                    # Ordena de mayor a menor frecuencia
 
-    return resumen.round(1).reset_index(drop=True)                                 # Redondea y reindexa el resultado
+    resumen["Kilometros"] = resumen["Kilometros"].round(1)                          # Un decimal en el volumen
+    resumen["Tiempo total"] = resumen["Horas"].apply(formatear_horas)               # Tiempo en formato horas y minutos
+    resumen = resumen.drop(columns=["Horas"])                                       # Sustituye la versión decimal
+
+    return resumen.reset_index(drop=True)                                          # Reindexa el resultado final
 
 
 def ultimas_actividades(df, n=10):
@@ -286,7 +337,16 @@ def ultimas_actividades(df, n=10):
 
     tabla = df.tail(n).sort_values("Fecha", ascending=False).copy()                # Toma las más recientes primero
     tabla["Fecha"] = tabla["Fecha"].dt.strftime("%d/%m/%Y")                        # Formatea la fecha de forma legible
+
+    # El ritmo (min/km) describe bien la carrera, pero en ciclismo la métrica
+    # interpretable es la velocidad media, por lo que se muestran ambas columnas.
+    es_bici = tabla["Tipo de actividad"] == "Bicicleta"                            # Identifica las salidas en bicicleta
+    tabla.loc[es_bici, "Ritmo (min/km)"] = np.nan                                  # Oculta el ritmo en ciclismo
+    tabla.loc[~es_bici, "Velocidad (km/h)"] = np.nan                               # Oculta la velocidad en el resto
+
     columnas = ["Fecha", "Tipo de actividad", "Distancia_km", "Minutos",           # Columnas relevantes para el usuario
-                "Ritmo (min/km)", "Carga"]
-    tabla = tabla[columnas].round(1)                                               # Redondea para evitar decimales largos
-    return tabla.rename(columns={"Distancia_km": "Km", "Minutos": "Min"})          # Nombres cortos para la tabla
+                "Ritmo (min/km)", "Velocidad (km/h)", "Carga"]
+    tabla["Ritmo (min/km)"] = tabla["Ritmo (min/km)"].apply(formatear_ritmo)        # Convierte el ritmo a min:seg
+    return tabla.rename(columns={"Distancia_km": "Km", "Minutos": "Duración (Min)",           # Nombres cortos para la tabla
+                                 "Ritmo (min/km)": "Ritmo (min:s/km)",
+                                 "Velocidad (km/h)": "Vel (km/h)"})

@@ -21,6 +21,8 @@ load_dotenv()                                                                   
 RUTA_CSV = "actividades_strava.csv"                                                # CSV histórico exportado de Strava
 RUTA_SYNC = "actividades_sincronizadas.csv"                                        # CSV incremental generado por la API
 
+MARGEN_SINCRONIZACION = 3                                                          # Días de solape al descargar novedades
+
 URL_TOKEN = "https://www.strava.com/oauth/token"                                   # Endpoint de renovación de token
 URL_ACTIVIDADES = "https://www.strava.com/api/v3/athlete/activities"               # Endpoint de listado de actividades
 
@@ -113,7 +115,12 @@ def sincronizar_con_strava(fecha_ultima_actividad=None):
         token = _obtener_access_token()                                            # Renueva el token de acceso
         desde = None                                                               # Por defecto descarga todo
         if fecha_ultima_actividad is not None and pd.notna(fecha_ultima_actividad):  # Si ya hay histórico previo
-            desde = time.mktime(pd.Timestamp(fecha_ultima_actividad).timetuple())  # Convierte la fecha a epoch
+            # Se retrocede un margen de seguridad porque el parámetro 'after' de la API filtra
+            # sobre la hora UTC, mientras que las fechas almacenadas son hora local. Sin este
+            # margen, las actividades situadas junto al límite de la ventana se pierden.
+            # Los registros repetidos se eliminan después por fecha, así que solapar no duplica.
+            corte = pd.Timestamp(fecha_ultima_actividad) - pd.Timedelta(days=MARGEN_SINCRONIZACION)
+            desde = corte.timestamp()                                              # Convierte el corte a epoch UTC
 
         crudas = _descargar_actividades(token, desde_epoch=desde)                  # Descarga el lote incremental
         nuevas = _json_a_formato_csv(crudas)                                       # Homologa al esquema del CSV
