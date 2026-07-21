@@ -147,15 +147,35 @@ def leer_fuentes_crudas():
     Une el CSV histórico con el CSV de actividades sincronizadas por API.
     Devuelve un único DataFrame crudo, o None si no existe ninguna fuente.
     """
+    # El export histórico trae 103 columnas y la sincronización solo 7. Al unirlos tal
+    # cual se generaban columnas enteras vacías y pandas advertía de un cambio futuro al
+    # deducir sus tipos. Recortando ambas fuentes al mismo esquema, el aviso desaparece.
+    columnas_utiles = [
+        "Fecha de la actividad", "Tipo de actividad", "Distancia", "Distancia.1",
+        "Tiempo en movimiento", "Desnivel positivo", "Ritmo cardiaco promedio",
+        "Velocidad promedio",
+    ]
+
     fuentes = []                                                                   # Lista de DataFrames disponibles
 
-    if os.path.exists(RUTA_CSV):                                                   # Si existe el histórico exportado
-        fuentes.append(pd.read_csv(RUTA_CSV, low_memory=False))                    # Lo añade como base
+    for ruta in (RUTA_CSV, RUTA_SYNC):                                             # Recorre histórico y sincronización
+        if not os.path.exists(ruta):                                               # Omite las fuentes inexistentes
+            continue                                                               # Pasa a la siguiente ruta
 
-    if os.path.exists(RUTA_SYNC):                                                  # Si existe el archivo sincronizado
-        fuentes.append(pd.read_csv(RUTA_SYNC, low_memory=False))                   # Lo añade como complemento
+        datos = pd.read_csv(ruta, low_memory=False)                                # Lee el fichero completo
+        presentes = [c for c in columnas_utiles if c in datos.columns]             # Columnas útiles realmente presentes
+        datos = datos[presentes].dropna(axis=1, how="all")                         # Descarta las columnas totalmente vacías
+
+        if not datos.empty:                                                        # Solo aporta fuentes con contenido
+            fuentes.append(datos)                                                  # Añade la fuente ya normalizada
 
     if not fuentes:                                                                # Si no hay ninguna fuente de datos
         return None                                                                # Señaliza la ausencia de datos
 
-    return pd.concat(fuentes, ignore_index=True)                                   # Devuelve la unión de ambas fuentes
+    unido = pd.concat(fuentes, ignore_index=True)                                  # Une las fuentes ya homogeneizadas
+
+    for columna in columnas_utiles:                                                # Garantiza el esquema completo
+        if columna not in unido.columns:                                           # Si alguna columna no llegó a existir
+            unido[columna] = pd.NA                                                 # La crea vacía para el backend
+
+    return unido                                                                   # Devuelve la unión de ambas fuentes

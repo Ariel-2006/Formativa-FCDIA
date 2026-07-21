@@ -304,12 +304,17 @@ def resumen_semanal(df):
     """Agrega el volumen y la carga por semana calendario, por deporte."""
     if df.empty:                                                                   # Sin datos no hay agregación
         return pd.DataFrame()                                                      # Devuelve un DataFrame vacío
-
     semanal = df.groupby(["Semana", "Tipo de actividad"]).agg(                     # Agrupa por semana y deporte
         Kilometros=("Distancia_km", "sum"),                                        # Volumen semanal en kilómetros
         Carga=("Carga", "sum"),                                                    # Carga total acumulada en la semana
     ).reset_index()                                                                # Devuelve el índice a columnas
-    return semanal.round(1)                                                        # Redondea a un decimal para las etiquetas
+
+    # Etiqueta legible del rango completo (lunes a domingo) en lugar de una fecha suelta.
+    fin_semana = semanal["Semana"] + pd.Timedelta(days=6)                          # Domingo de cada semana
+    semanal["Rango"] = (semanal["Semana"].dt.strftime("%d/%m") + " - "             # Formato '13/07 - 19/07'
+                        + fin_semana.dt.strftime("%d/%m"))
+
+    return semanal.sort_values("Semana").round(1)                                  # Ordena y redondea a un decimal
 
 
 def resumen_por_tipo(df):
@@ -339,14 +344,15 @@ def ultimas_actividades(df, n=10):
     tabla["Fecha"] = tabla["Fecha"].dt.strftime("%d/%m/%Y")                        # Formatea la fecha de forma legible
 
     # El ritmo (min/km) describe bien la carrera, pero en ciclismo la métrica
-    # interpretable es la velocidad media, por lo que se muestran ambas columnas.
+    # interpretable es la velocidad media, así que se muestra una u otra según el deporte.
     es_bici = tabla["Tipo de actividad"] == "Bicicleta"                            # Identifica las salidas en bicicleta
     tabla.loc[es_bici, "Ritmo (min/km)"] = np.nan                                  # Oculta el ritmo en ciclismo
     tabla.loc[~es_bici, "Velocidad (km/h)"] = np.nan                               # Oculta la velocidad en el resto
 
     columnas = ["Fecha", "Tipo de actividad", "Distancia_km", "Minutos",           # Columnas relevantes para el usuario
                 "Ritmo (min/km)", "Velocidad (km/h)", "Carga"]
-    tabla["Ritmo (min/km)"] = tabla["Ritmo (min/km)"].apply(formatear_ritmo)        # Convierte el ritmo a min:seg
-    return tabla.rename(columns={"Distancia_km": "Km", "Minutos": "Duración (Min)",           # Nombres cortos para la tabla
+    tabla = tabla[columnas].round(1)                                               # Redondea para evitar decimales largos
+    tabla["Ritmo (min/km)"] = tabla["Ritmo (min/km)"].apply(formatear_ritmo)       # Convierte el ritmo a min:seg
+    return tabla.rename(columns={"Distancia_km": "Km", "Minutos": "Min",           # Nombres cortos para la tabla
                                  "Ritmo (min/km)": "Ritmo (min:s/km)",
                                  "Velocidad (km/h)": "Vel (km/h)"})

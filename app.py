@@ -7,7 +7,8 @@ Toda la lógica vive en backend.py, modelo.py, agente.py y data_loader.py.
 """
 
 import os                                                                          # Acceso a variables de entorno
-import pandas as pd                                                                # Manejo puntual de datos
+import pandas as pd
+import numpy as np                                                                # Manejo puntual de datos
 import plotly.express as px                                                        # Gráficos interactivos
 import plotly.graph_objects as go                                                  # Trazos y bandas personalizadas
 import streamlit as st                                                             # Framework de la interfaz web
@@ -211,10 +212,13 @@ with tab_panel:                                                                 
     semanal = backend.resumen_semanal(datos)                                        # Agregación por semana y deporte
     if not semanal.empty:                                                           # Solo si hay datos agregados
         fig_sem = px.bar(semanal, x="Semana", y="Kilometros", color="Tipo de actividad",  # Barras apiladas por deporte
-                         title=None, labels={"Kilometros": "Km", "Semana": ""})
+                         labels={"Kilometros": "Km", "Semana": ""},
+                         custom_data=["Rango"])                                     # Adjunta el rango de la semana
+        fig_sem.update_traces(                                                      # Etiqueta del cursor con la semana completa
+            hovertemplate="Semana %{customdata[0]}<br>%{fullData.name}: %{y:.1f} km<extra></extra>")
         fig_sem.update_layout(yaxis_tickformat=".1f", hovermode="x unified",        # Etiquetas con un solo decimal
                               legend_title_text="", height=340, margin=dict(t=10))
-        st.plotly_chart(fig_sem, width="stretch")                                   # Renderiza el gráfico semanal
+        st.plotly_chart(fig_sem, width="stretch")                                   # Renderiza el gráfico semanal                                   # Renderiza el gráfico semanal
 
 # ============ PESTAÑA 2: CARGA Y FATIGA ============
 with tab_carga:                                                                     # Análisis del equilibrio de carga
@@ -364,7 +368,14 @@ with tab_pred:                                                                  
         fig_prog = px.line(historico, x="Inicio", y="mejor_ritmo", markers=True,    # Evolución del mejor esfuerzo
                            labels={"mejor_ritmo": "Mejor ritmo (min/km)", "Inicio": "Inicio del bloque"})
         fig_prog.update_traces(hovertemplate="Bloque iniciado el %{x|%d/%m/%Y}<br>Mejor ritmo: %{y:.2f} min/km<extra></extra>")
-        fig_prog.update_yaxes(autorange="reversed", tickformat=".1f")               # Invierte el eje: más abajo es más rápido
+        
+        minimo = int(np.floor(historico["mejor_ritmo"].min()))                      # Minuto entero inferior de la serie
+        maximo = int(np.ceil(historico["mejor_ritmo"].max()))                       # Minuto entero superior de la serie
+        marcas = list(range(minimo, maximo + 1))                                    # Escala de minutos enteros: 5, 6, 7, 8
+        
+        fig_prog.update_yaxes(autorange="reversed", tickvals=marcas,                # Invierte el eje: más abajo es más rápido
+                              ticktext=[str(m) for m in marcas])                    # Etiquetas sin decimales
+        
         fig_prog.update_layout(height=330, margin=dict(t=10))                       # Ajustes de presentación
         st.plotly_chart(fig_prog, width="stretch")                                  # Renderiza la curva de progresión
         st.caption(f"Cada punto es un bloque de 28 días, contados desde la primera actividad "
@@ -385,15 +396,7 @@ with tab_hist:                                                                  
     fig_hist = px.histogram(datos, x="Distancia_km", nbins=25,                      # Histograma del periodo filtrado
                             labels={"Distancia_km": "Distancia (km)"},
                             color_discrete_sequence=["#EE5A24"])
-    historico["Ritmo texto"] = historico["mejor_ritmo"].apply(backend.formatear_ritmo)  # Ritmo en formato min:seg
-    fig_prog.update_traces(customdata=historico[["Ritmo texto"]],               # Adjunta el ritmo ya formateado
-                               hovertemplate="Bloque iniciado el %{x|%d/%m/%Y}<br>"
-                                             "Mejor ritmo: %{customdata[0]} min/km<extra></extra>")
-
-    marcas = sorted(historico["mejor_ritmo"].unique())[::3]                     # Selecciona algunas marcas del eje
-    
-    fig_prog.update_yaxes(autorange="reversed", tickvals=marcas,                # Invierte el eje: más abajo es más rápido
-                              ticktext=[backend.formatear_ritmo(v) for v in marcas])  # Etiquetas del eje en min:seg
+    fig_hist.update_traces(hovertemplate="Distancia: %{x:.1f} km<br>No. actividades: %{y}<extra></extra>")
     fig_hist.update_layout(height=300, margin=dict(t=10), yaxis_title="No. actividades",  # Ajustes de presentación
                            xaxis_tickformat=".1f", bargap=0.05)
     st.plotly_chart(fig_hist, width="stretch")                                      # Renderiza el histograma
@@ -423,15 +426,29 @@ if boton.button("🗑️ Borrar memoria", width="stretch"):                     
     st.session_state.mensajes = []                                                  # Vacía el historial de la sesión
     st.rerun()                                                                      # Recarga la interfaz sin mensajes
 
-for mensaje in st.session_state.mensajes:                                           # Recorre el historial recuperado
-    with st.chat_message(mensaje["role"]):                                          # Abre el globo correspondiente
-        st.markdown(mensaje["content"])                                             # Muestra el contenido del mensaje
+# La conversación se confina a un contenedor de altura fija con desplazamiento propio,
+# para que el historial no alargue la página. Por defecto solo se muestran los últimos
+# intercambios, de modo que la pregunta más reciente quede siempre a la vista.
+MENSAJES_VISIBLES = 6                                                               # Mensajes mostrados por defecto
+total_mensajes = len(st.session_state.mensajes)                                     # Tamaño del historial completo
+
+ver_todo = st.checkbox(f"Ver conversación completa ({total_mensajes} mensajes)",     # Permite recuperar el historial
+                       value=False, disabled=total_mensajes <= MENSAJES_VISIBLES)
+
+visibles = st.session_state.mensajes if ver_todo else st.session_state.mensajes[-MENSAJES_VISIBLES:]
+
+ventana_chat = st.container(height=420)                                             # Contenedor con barra de desplazamiento
+with ventana_chat:                                                                  # Todo el chat vive dentro de la ventana
+    for mensaje in visibles:                                                        # Recorre los mensajes a mostrar
+        with st.chat_message(mensaje["role"]):                                      # Abre el globo correspondiente
+            st.markdown(mensaje["content"])                                         # Muestra el contenido del mensaje
 
 if prompt := st.chat_input("Ej: ¿Qué entreno mañana? ¿Voy bien para bajar de 50 min en 10K?"):  # Entrada del usuario
 
     st.session_state.mensajes.append({"role": "user", "content": prompt})           # Añade el mensaje al historial
-    with st.chat_message("user"):                                                   # Abre el globo del usuario
-        st.markdown(prompt)                                                         # Renderiza el texto introducido
+    with ventana_chat:                                                              # Escribe dentro de la ventana con scroll
+        with st.chat_message("user"):                                               # Abre el globo del usuario
+            st.markdown(prompt)                                                     # Renderiza el texto introducido
 
     if not API_KEY_CLAUDE:                                                          # Verifica que exista la clave de Claude
         st.error("❌ No se encontró 'ANTHROPIC_API_KEY' en el archivo .env local.")  # Aviso de configuración
@@ -456,10 +473,11 @@ if prompt := st.chat_input("Ej: ¿Qué entreno mañana? ¿Voy bien para bajar de
                 actividades_recientes=backend.ultimas_actividades(datos_completos, 5),  # Detalle de las 5 últimas sesiones
             )
 
-            with st.chat_message("assistant"):                                      # Abre el globo del asistente
-                with st.spinner("Analizando tus datos..."):                          # Indicador de proceso en curso
-                    texto = agente.consultar_agente(cliente, contexto, st.session_state.mensajes)  # Consulta al modelo
-                st.markdown(texto)                                                   # Muestra la respuesta generada
+            with ventana_chat:                                                      # Escribe dentro de la ventana con scroll
+                with st.chat_message("assistant"):                                  # Abre el globo del asistente
+                    with st.spinner("Analizando tus datos..."):                     # Indicador de proceso en curso
+                        texto = agente.consultar_agente(cliente, contexto, st.session_state.mensajes)  # Consulta al modelo
+                    st.markdown(texto)                                              # Muestra la respuesta generada
 
             st.session_state.mensajes.append({"role": "assistant", "content": texto})  # Guarda la respuesta en el historial
             agente.guardar_historial(st.session_state.mensajes)                      # Persiste la conversación en disco
