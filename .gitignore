@@ -1,0 +1,11 @@
+# Variables de entorno y llaves
+.env
+
+# Ficheros de persistencia local (efímeros en Streamlit Cloud, no van al repo)
+*.json
+actividades_sincronizadas.csv
+
+# Cachés y artefactos de Python
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
