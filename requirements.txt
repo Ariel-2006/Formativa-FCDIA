@@ -6,3 +6,4 @@ anthropic
 python-dotenv
 scikit-learn
 requests
+supabase

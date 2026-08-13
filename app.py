@@ -26,10 +26,9 @@ import data_loader                                                              
 load_dotenv()                                                                       # Lee el archivo .env local y lo carga en memoria
 API_KEY_CLAUDE = os.getenv("ANTHROPIC_API_KEY")                                     # Recupera de forma segura la API Key
 
-# ---------------------------------------------------------
 # CONFIGURACIÓN DE LA PÁGINA
-# ---------------------------------------------------------
-st.set_page_config(page_title="Entrenador IA | FCDIA", page_icon="🏃", layout="wide")  # Configura la ventana del navegador
+
+st.set_page_config(page_title=" MY Coach IA", page_icon="🏃", layout="wide")  # Configura la ventana del navegador
 
 st.markdown(                                                                        # Inyecta estilos para las tarjetas de KPI
     """
@@ -42,13 +41,12 @@ st.markdown(                                                                    
     unsafe_allow_html=True,                                                         # Permite renderizar CSS personalizado
 )
 
-st.title("🏃 Sistema Inteligente: Entrenador IA — FCDIA")                          # Cabecera principal de la aplicación
+st.title("🏃 Athletix 🚲")                          # Cabecera principal de la aplicación
 st.caption("Monitoreo de carga, predicción de rendimiento y decisiones asistidas por un agente LLM.")  # Descripción breve
 
 
-# ---------------------------------------------------------
-# CARGA DE DATOS (con caché para no reprocesar en cada rerun)
-# ---------------------------------------------------------
+# CARGA DE DATOS
+
 @st.cache_data(show_spinner="Procesando actividades...")                            # Evita recalcular en cada interacción
 def obtener_datos(version):
     """Carga y procesa el histórico. El parámetro 'version' invalida la caché tras sincronizar."""

@@ -314,7 +314,8 @@ def resumen_semanal(df):
     semanal["Rango"] = (semanal["Semana"].dt.strftime("%d/%m") + " - "             # Formato '13/07 - 19/07'
                         + fin_semana.dt.strftime("%d/%m"))
 
-    return semanal.sort_values("Semana").round(1)                                  # Ordena y redondea a un decimal
+    semanal[["Kilometros", "Carga"]] = semanal[["Kilometros", "Carga"]].round(1)
+    return semanal.sort_values("Semana")                                  # Ordena y redondea a un decimal
 
 
 def resumen_por_tipo(df):
